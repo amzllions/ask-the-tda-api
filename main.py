@@ -6,17 +6,19 @@ from functools import lru_cache
 
 app = FastAPI()
 
+# OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 @lru_cache
 def load_tda_rules() -> str:
     """
-    Load the full TDA rules text from a local file.
-    This is your single source of truth.
+    Load the full official TDA rules text.
+    This is the ONLY knowledge source the model is allowed to use.
     """
     base_dir = os.path.dirname(__file__)
-    path = os.path.join(base_dir, "tda_rules_en.txt")
+    path = os.path.join(base_dir, "tda-rules-en.txt")  # <-- hyphens, no underscores
+
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
@@ -30,24 +32,22 @@ async def ask_tda(q: Question):
     try:
         tda_rules = load_tda_rules()
 
-        # Build a strict prompt: model only sees TDA rules + the question
         prompt = f"""
-You are a strict rules assistant for poker tournament directors.
+You are Ask the TDA, a STRICT poker tournament rules assistant.
 
-Below is the full text of the official Poker TDA rules.
-You must obey ALL of these constraints:
+You MUST follow these rules without exception:
 
-- You may ONLY use the rules text below.
-- You must NOT use any other poker rule set or general poker knowledge
-  (no Robert's Rules, no WSOP rules, no "standard casino procedure", etc.).
-- If the rules do not explicitly cover the situation, say that clearly and
-  refer to TDA Rule 1 (TD discretion).
-- You must answer in the SAME LANGUAGE as the user's question.
-- You must include the exact TDA rule number(s) that support your decision.
-- Use EXACTLY this format:
+1. You may ONLY use the official Poker TDA rules text provided below.
+2. You must NOT use any other poker rules or general poker knowledge
+   (NO Robert’s Rules, NO WSOP rules, NO casino practices).
+3. If the TDA rules do NOT explicitly cover the situation, you MUST say so
+   and refer to TDA Rule 1 (Tournament Director discretion).
+4. You must answer in the SAME LANGUAGE as the question.
+5. You must cite the EXACT TDA rule number(s) that support the ruling.
+6. You must use EXACTLY this format:
 
 The answer in this situation is:
-[clear ruling in same language as the question]
+[clear ruling]
 
 Relevant TDA Rule(s):
 - Rule X
@@ -66,9 +66,9 @@ User question:
             input=prompt,
         )
 
-        # Extract text from Responses API
+        # Extract text from the Responses API
         answer_text = ""
-        if hasattr(response, "output") and response.output:
+        if response.output:
             for message in response.output:
                 for content in message.content:
                     if content.type == "output_text":
@@ -76,40 +76,39 @@ User question:
 
         answer_text = answer_text.strip()
 
-        # If nothing useful came back
+        # Safety fallback if model returns nothing useful
         if not answer_text:
             answer_text = (
-                "The TDA rules text did not provide a clear explicit answer to this situation. "
-                "The Tournament Director should apply TDA Rule 1 and make the fairest possible ruling.\n\n"
+                "The answer in this situation is:\n"
+                "The TDA rules do not explicitly cover this situation. "
+                "The Tournament Director should make a ruling that best "
+                "preserves fairness and the integrity of the tournament.\n\n"
                 "Relevant TDA Rule(s):\n"
-                "- Rule 1 (TD discretion)"
+                "- Rule 1"
             )
 
-        # Backend guardrail: block non-TDA sources if they somehow appear
-        lower = answer_text.lower()
+        # HARD BLOCK non-TDA sources (extra safety)
         banned_terms = [
-            "robert's rules",
-            "roberts rules",
+            "robert",
             "wsop",
             "world series of poker",
-            "pokernews",
-            "roberts-rules-of-poker",
+            "casino rules",
+            "standard procedure",
         ]
-        if any(term in lower for term in banned_terms):
+
+        if any(term in answer_text.lower() for term in banned_terms):
             answer_text = (
-                "The TDA rules assistant must not rely on non-TDA sources. "
-                "For this situation, please consult the official TDA rules text directly "
-                "and apply TDA Rule 1 if necessary.\n\n"
+                "The answer in this situation is:\n"
+                "The TDA rules do not explicitly cover this situation. "
+                "The Tournament Director should make the final ruling "
+                "under TDA Rule 1.\n\n"
                 "Relevant TDA Rule(s):\n"
-                "- Rule 1 (TD discretion)"
+                "- Rule 1"
             )
 
-        # Ensure we always end with a TDA-style footer
-        if "relevant tda rule" not in answer_text.lower():
-            answer_text += (
-                "\n\nRelevant TDA Rule(s):\n"
-                "- Rule 1 (TD discretion)"
-            )
+        # Ensure rule section is always present
+        if "Relevant TDA Rule" not in answer_text:
+            answer_text += "\n\nRelevant TDA Rule(s):\n- Rule 1"
 
         return {"answer": answer_text}
 
