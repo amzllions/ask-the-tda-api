@@ -22,16 +22,15 @@ async def ask_tda(q: Question):
             metadata={"workflow_id": WORKFLOW_ID},
         )
 
+        # ✅ Correct way to extract text from Responses API
         answer_text = ""
 
-        if hasattr(response, "output") and response.output:
-            for item in response.output:
-                content = item.get("content", [])
-                for block in content:
-                    if block.get("type") == "output_text":
-                        answer_text += block.get("text", "")
+        for message in response.output:
+            for content in message.content:
+                if content.type == "output_text":
+                    answer_text += content.text
 
-        if not answer_text:
+        if not answer_text.strip():
             answer_text = "No answer returned from the TDA agent."
 
         return {"answer": answer_text}
